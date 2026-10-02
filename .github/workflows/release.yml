@@ -1,0 +1,41 @@
+name: PyPI OIDC test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  oidc-test:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show safe GitHub identity context
+        shell: bash
+        run: |
+          echo "repository=${GITHUB_REPOSITORY}"
+          echo "repository_owner=${GITHUB_REPOSITORY_OWNER}"
+          echo "workflow=${GITHUB_WORKFLOW}"
+          echo "run_id=${GITHUB_RUN_ID}"
+          echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+          echo "actor=${GITHUB_ACTOR}"
+          echo "ref=${GITHUB_REF}"
+
+      - name: Confirm OIDC capability
+        shell: bash
+        run: |
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          echo "OIDC request environment present"
+
+      - name: Stop before publishing
+        run: |
+          echo "Positive OIDC boundary confirmed."
+          echo "No package published yet."
