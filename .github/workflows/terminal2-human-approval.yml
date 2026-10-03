@@ -1,0 +1,177 @@
+name: Human Approval Authority Lab
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  before-gate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create pre-gate evidence
+        shell: bash
+        run: |
+          mkdir -p evidence
+
+          jq -n \
+            --arg schema "human-approval-pre-gate-v1" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg workflow "$GITHUB_WORKFLOW" \
+            --arg workflow_ref "$GITHUB_WORKFLOW_REF" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg actor "$GITHUB_ACTOR" \
+            --arg ref "$GITHUB_REF" \
+            --arg sha "$GITHUB_SHA" \
+            '{
+              schema: $schema,
+              repository: $repository,
+              workflow: $workflow,
+              workflow_ref: $workflow_ref,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              actor: $actor,
+              ref: $ref,
+              sha: $sha,
+              protected_environment_entered: false,
+              raw_token_stored: false
+            }' > evidence/01-pre-gate.json
+
+      - name: Upload pre-gate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-approval-pre-gate
+          path: evidence/01-pre-gate.json
+
+  approved-action:
+    needs: before-gate
+    runs-on: ubuntu-latest
+
+    environment:
+      name: terminal2-production
+
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Create post-approval evidence
+        shell: bash
+        run: |
+          mkdir -p evidence
+
+          jq -n \
+            --arg schema "human-approval-post-gate-v1" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg workflow "$GITHUB_WORKFLOW" \
+            --arg workflow_ref "$GITHUB_WORKFLOW_REF" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg actor "$GITHUB_ACTOR" \
+            --arg ref "$GITHUB_REF" \
+            --arg sha "$GITHUB_SHA" \
+            --arg environment "terminal2-production" \
+            '{
+              schema: $schema,
+              repository: $repository,
+              workflow: $workflow,
+              workflow_ref: $workflow_ref,
+              run_id: $run_id,
+              actor: $actor,
+              ref: $ref,
+              sha: $sha,
+              environment: $environment,
+              protected_environment_entered: true,
+              raw_token_stored: false
+            }' > evidence/02-post-approval.json
+
+      - name: Controlled issue creation
+        id: create_issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+
+          RESPONSE=$(curl -sS \
+            -w '\n%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues" \
+            -d '{
+              "title":"Human approval authority test",
+              "body":"Controlled authority experiment."
+            }')
+
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          JSON_BODY=$(echo "$RESPONSE" | sed '$d')
+
+          ISSUE_NUMBER=$(echo "$JSON_BODY" | jq -r '.number // empty')
+
+          if [ "$HTTP_STATUS" = "201" ]; then
+            SUCCESS=true
+          else
+            SUCCESS=false
+          fi
+
+          jq -n \
+            --arg schema "human-approval-action-result-v1" \
+            --arg action "issues.create" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg status "$HTTP_STATUS" \
+            --arg issue "$ISSUE_NUMBER" \
+            --argjson success "$SUCCESS" \
+            '{
+              schema: $schema,
+              action: $action,
+              repository: $repository,
+              http_status: ($status | tonumber),
+              success: $success,
+              issue_number:
+                (if $issue == "" then null else ($issue | tonumber) end),
+              raw_token_stored: false
+            }' > evidence/03-action-result.json
+
+          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Cleanup issue
+        if: steps.create_issue.outputs.issue_number != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.create_issue.outputs.issue_number }}
+        run: |
+          RESPONSE=$(curl -sS \
+            -w '\n%{http_code}' \
+            -X PATCH \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}" \
+            -d '{"state":"closed"}')
+
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+
+          jq -n \
+            --arg schema "human-approval-cleanup-v1" \
+            --arg status "$HTTP_STATUS" \
+            --arg issue "$ISSUE_NUMBER" \
+            '{
+              schema: $schema,
+              action: "issues.close",
+              http_status: ($status | tonumber),
+              success: ($status == "200"),
+              issue_number: ($issue | tonumber),
+              raw_token_stored: false
+            }' > evidence/04-cleanup.json
+
+      - name: Upload approved evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-approval-approved
+          path: evidence/
