@@ -1,0 +1,197 @@
+name: Terminal2 Delegated Action
+
+on:
+  workflow_call:
+    inputs:
+      scenario:
+        required: true
+        type: string
+
+jobs:
+  delegated-action:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Record delegated workload metadata
+        shell: bash
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_RUN_ID: ${{ github.run_id }}
+          CALLER_RUN_NUMBER: ${{ github.run_number }}
+          CALLER_RUN_ATTEMPT: ${{ github.run_attempt }}
+          CALLER_ACTOR: ${{ github.actor }}
+          CALLER_ACTOR_ID: ${{ github.actor_id }}
+          CALLER_REF: ${{ github.ref }}
+          CALLER_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+
+          result = {
+              "schema": "terminal2-github-reusable-workflow-v1",
+              "scenario": os.environ["SCENARIO"],
+              "execution_model": "reusable_workflow",
+              "reusable_workflow": ".github/workflows/terminal2-delegated-action.yml",
+              "repository": os.environ["CALLER_REPOSITORY"],
+              "run_id": os.environ["CALLER_RUN_ID"],
+              "run_number": os.environ["CALLER_RUN_NUMBER"],
+              "run_attempt": os.environ["CALLER_RUN_ATTEMPT"],
+              "actor": os.environ["CALLER_ACTOR"],
+              "actor_id": os.environ["CALLER_ACTOR_ID"],
+              "ref": os.environ["CALLER_REF"],
+              "sha": os.environ["CALLER_SHA"],
+              "workflow_ref_observed": os.environ["WORKFLOW_REF"],
+              "raw_github_token_stored": False
+          }
+
+          with open("01-delegated-workload-metadata.json", "w") as f:
+              json.dump(result, f, indent=2)
+
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Attempt controlled issue creation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          import urllib.error
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          scenario = os.environ["SCENARIO"]
+
+          url = f"https://api.github.com/repos/{repo}/issues"
+
+          body = json.dumps({
+              "title": f"terminal2-delegation-{scenario.lower()}",
+              "body": "Controlled Terminal 2 reusable-workflow delegation test."
+          }).encode()
+
+          request = urllib.request.Request(
+              url,
+              data=body,
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "Content-Type": "application/json"
+              }
+          )
+
+          status = None
+          issue_number = None
+          issue_node_id = None
+          message = None
+
+          try:
+              with urllib.request.urlopen(request) as response:
+                  status = response.status
+                  payload = json.loads(response.read())
+                  issue_number = payload.get("number")
+                  issue_node_id = payload.get("node_id")
+          except urllib.error.HTTPError as error:
+              status = error.code
+
+              raw = error.read().decode(errors="replace")
+
+              try:
+                  payload = json.loads(raw)
+                  message = payload.get("message")
+              except Exception:
+                  message = "HTTP error"
+
+          result = {
+              "schema": "terminal2-github-delegated-execution-v1",
+              "scenario": scenario,
+              "action": "issues.create",
+              "repository": repo,
+              "http_status": status,
+              "success": status == 201,
+              "issue_number": issue_number,
+              "issue_node_id": issue_node_id,
+              "response_message": message,
+              "raw_github_token_stored": False
+          }
+
+          with open("02-delegated-action-result.json", "w") as f:
+              json.dump(result, f, indent=2)
+
+          if issue_number:
+              with open("issue-number.txt", "w") as f:
+                  f.write(str(issue_number))
+
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Cleanup created issue
+        if: ${{ inputs.scenario == 'WRITE_AUTHORITY' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import urllib.request
+
+          issue_file = pathlib.Path("issue-number.txt")
+
+          if not issue_file.exists():
+              print("No issue created; nothing to clean up.")
+              raise SystemExit(0)
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          number = issue_file.read_text().strip()
+
+          url = f"https://api.github.com/repos/{repo}/issues/{number}"
+
+          body = json.dumps({
+              "state": "closed"
+          }).encode()
+
+          request = urllib.request.Request(
+              url,
+              data=body,
+              method="PATCH",
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "Content-Type": "application/json"
+              }
+          )
+
+          with urllib.request.urlopen(request) as response:
+              payload = json.loads(response.read())
+
+          result = {
+              "schema": "terminal2-github-delegated-cleanup-v1",
+              "action": "issues.close",
+              "issue_number": payload.get("number"),
+              "state": payload.get("state"),
+              "raw_github_token_stored": False
+          }
+
+          with open("03-cleanup.json", "w") as f:
+              json.dump(result, f, indent=2)
+          PY
+
+      - name: Upload delegated evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal2-delegation-${{ inputs.scenario }}
+          path: |
+            01-delegated-workload-metadata.json
+            02-delegated-action-result.json
+            03-cleanup.json
+          if-no-files-found: ignore
