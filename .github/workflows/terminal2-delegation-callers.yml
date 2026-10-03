@@ -1,0 +1,27 @@
+name: Terminal2 Delegation Boundary Lab
+
+on:
+  workflow_dispatch:
+
+jobs:
+
+  delegated-low:
+    name: Delegated low authority
+    permissions:
+      contents: read
+      issues: read
+
+    uses: ./.github/workflows/terminal2-delegated-action.yml
+    with:
+      scenario: LOW_AUTHORITY
+
+
+  delegated-write:
+    name: Delegated write authority
+    permissions:
+      contents: read
+      issues: write
+
+    uses: ./.github/workflows/terminal2-delegated-action.yml
+    with:
+      scenario: WRITE_AUTHORITY
